@@ -1,5 +1,5 @@
 # MessageBox
-Modern Messenger-style addon to handle your whispers
+Adds optional integrations with ClassicAPI, SuperWoW, Nampower, UnitXP_SP3, and WeirdUtils to tilare's MessageBox. Every feature detects its dependency at runtime -- install none, some, or all of the above and MessageBox behaves the same as stock either way, just better where a given mod happens to be present.
 
 **Nampower** is optional, but required for crash save backup
 
@@ -32,18 +32,122 @@ Modern Messenger-style addon to handle your whispers
  **Conversation Management –** Delete individual chats or clear your entire history at once.
 
  **Commands -** Open the UI with /messagebox, /mbox, or /mb.
-## Images
-<img src="https://i.gyazo.com/d7663395687e718d7362dade72125576.png" />
+## What each integration does
 
-<img src="https://i.gyazo.com/71e499a56595f65924b86729419469e4.png" />
+- **ClassicAPI** -- resolves a whisperer's class/race the instant their
+  message arrives, using `GetCurrentChatGUID()` + `GetPlayerInfoByGUID()`
+  instead of waiting on MessageBox's 30-second `/who` throttle. Also opts
+  MessageBox into ClassicAPI's on-disk name/class cache
+  (`C_PlayerCache.SetEnabled` / `SetScanEnabled`), so contacts keep their
+  class color across `/reload`s and even resolve while offline if you've
+  whispered them before. `/who` is still sent afterward to pick up
+  guild/zone, which ClassicAPI doesn't expose.
 
-<img src="https://i.gyazo.com/ffd7055cee2e33f3df6e6b711c6d3a0a.png" />
+- **SuperWoW / Nampower** -- free, instant class/race resolution when the
+  whisperer happens to already be your target, mouseover, or in your
+  party/raid, by reading `UnitClass`/`UnitRace` off that unit directly
+  (no network call at all). This path works even without either mod
+  installed, but both extend the unit-token API to resolve by GUID rather
+  than name string, which is what makes the match exact rather than
+  name-string-fragile.
 
-<img src="https://i.gyazo.com/c9b450c1af33dbbdaf5540e80fa57e4c.png" />
+- **Nampower** -- turns on `NP_ChatBubblesWhisper` so whisperers still get
+  a chat bubble over their head in the world, since MessageBox normally
+  intercepts/hides the raw whisper line from the default chat frame.
 
-## Classic Theme
+- **UnitXP_SP3** -- MessageBox's existing popup notification also flashes
+  the Windows taskbar icon and plays an OS-level sound
+  (`UnitXP("notify", "taskbarIcon"/"systemSound")`), so a backgrounded
+  client still gets your attention. (UnitXP's own notify calls already
+  no-op while the game window is focused.)
 
-<img src="https://i.gyazo.com/129434d2714ee7a6d8c7d3063f3a2b2d.png" />
+- **WeirdUtils** -- if its `logsessions` module is loaded, adds
+  `/mbox log` to print the path of today's plaintext chat log, for anyone
+  who wants a raw backup alongside `MessageBoxDB`.
+
+- Always available regardless of what's installed: `/mbox mods` prints
+  which of the above were detected this session, and the adaptive `/who`
+  throttle below works with no client mods at all.
+
+## The /who throttle problem
+
+Every server rate-limits `/who` differently, and there's no API to ask what
+the limit is. MessageBox ships with `WHO_INTERVAL = 30` and
+`WHO_TIMEOUT = 10` hardcoded, which is wrong in both directions:
+
+- **Throttled realms** (Turtle and friends): queries get silently dropped.
+  `WHO_LIST_UPDATE` never fires, the stock code times out after 10s,
+  requeues, and burns the entry's 3 retries on nothing. That contact never
+  resolves.
+- **Quiet realms**: 30s is far slower than necessary. A 50-name backlog
+  takes 25 minutes to drain.
+- **Slow realms**: the fixed 10s timeout throws away *correct* answers that
+  arrive at 12s, because `waitingForWhoResult` has already been cleared by
+  the time `HandleWhoResult` runs.
+
+So Compat.lua measures it instead. It's an AIMD controller (additive
+decrease, multiplicative increase) driving `MessageBox.WHO_INTERVAL` and
+`MessageBox.WHO_TIMEOUT`, both of which Logic.lua re-reads on every
+scheduler tick -- so steering them is enough, no rewrite of the stock queue
+logic required.
+
+Four observable signals:
+
+| Signal | What it means | Response |
+|---|---|---|
+| **Timeout** | `SendWho` fired, no `WHO_LIST_UPDATE` within the timeout | Server dropped it. Interval x1.5 (x2.0 after 3 in a row) |
+| **Stale** | Results came back byte-identical to the previous query, target absent | Server ignored the query, we re-read the old set. Same back-off |
+| **Late** | Reply arrived after we'd given up, with genuinely new contents | Server is slow, not throttling. Raise the *timeout*, leave the interval alone |
+| **Success** | Fresh results in time | After 3 clean queries in a row, interval -2s |
+
+Bounds are 5s to 150s for the interval, up to 45s for the timeout. Zero
+results counts as success, not a drop -- "that player is offline" is a real
+answer, and treating it as a drop would push a realm into needless back-off
+just because you whisper offline people.
+
+The learned value is stored in `MessageBoxSettings`, so it persists across
+relogs rather than relearning from 30s every session. Per-character saved
+vars means each realm keeps its own learned number automatically.
+
+### Controlling it
+
+```
+/mbox who              -- show current interval, timeout, mode, queue depth
+/mbox who 45           -- pin to 45s, disable adaptive
+/mbox who auto         -- back to adaptive
+/mbox who reset        -- reset to 30s/10s and clear learned state
+/mbox who skip         -- toggle: skip /who entirely when class is already
+                          known via ClassicAPI (guild/zone go unresolved)
+/mbox who debug        -- print each tuning adjustment as it happens
+```
+
+`/mbox who skip` is the one worth knowing about on a hard-throttled realm.
+With ClassicAPI installed the class comes back instantly from the whisper's
+GUID, and the only thing the follow-up `/who` still buys you is guild and
+zone. If your throttle budget is tight, spending it on guild text is
+probably not the trade you want.
+
+## Notes / caveats
+
+- None of this touches `MessageBoxDB` or the message-storage format --
+  it only affects how fast/how accurately `MessageBox.playerCache` gets
+  filled in, using the exact same fields (`class`, `classUpper`, `race`,
+  `level`) the stock `/who` handler already writes.
+- SuperWoW detection uses the fact that it makes `UnitExists()` return a
+  GUID as a second value -- this is version-independent and doesn't rely
+  on any particular SuperWoW build string.
+- If you don't want the `NP_ChatBubblesWhisper` CVar changed, just
+  `/console set NP_ChatBubblesWhisper 0` afterward -- Compat.lua only sets
+  it once, the first time it finds Nampower with the CVar still at its
+  default of `0`.
+- The adaptive throttle only ever *steers* the stock scheduler by writing
+  `MessageBox.WHO_INTERVAL` / `WHO_TIMEOUT`. If you remove Compat.lua, those
+  revert to tilare's 30/10 on next load and nothing is left behind except
+  a few unused keys in `MessageBoxSettings`.
+- It can't detect a server that throttles by *silently returning your own
+  query as an empty result set* fast enough to look like a legitimate
+  "player offline". If a realm does that, pin the interval manually with
+  `/mbox who <seconds>`.
 
 
 
