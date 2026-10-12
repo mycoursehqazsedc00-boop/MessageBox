@@ -776,14 +776,20 @@ function MessageBox:CreateFrame()
     bellButton:SetHighlightTexture(MessageBox.textures.minimizeBtnHi)
     
     bellButton.UpdateState = function()
-        if MessageBox.settings.popupNotificationsEnabled then
-            bellButton:SetNormalTexture(MessageBox.textures.bellOn)
-            bellButton:SetAlpha(1.0) 
-            bellButton:GetNormalTexture():SetVertexColor(1, 1, 1) 
-        else
-            bellButton:SetNormalTexture(MessageBox.textures.bellOff)
-            bellButton:SetAlpha(1.0)
-            bellButton:GetNormalTexture():SetVertexColor(1, 1, 1)
+        local enabled = MessageBox.settings and MessageBox.settings.popupNotificationsEnabled
+        bellButton:SetNormalTexture(enabled and MessageBox.textures.bellOn or MessageBox.textures.bellOff)
+        bellButton:SetAlpha(1.0)
+        local nt = bellButton:GetNormalTexture()
+        local dim = false
+        if not nt then
+            -- img\bell-*.tga missing: GetNormalTexture() is nil. Use a stock icon
+            -- instead of erroring, dimmed when notifications are off.
+            bellButton:SetNormalTexture(MessageBox.textures.bellFallback)
+            nt = bellButton:GetNormalTexture()
+            dim = not enabled
+        end
+        if nt then
+            if dim then nt:SetVertexColor(0.45, 0.45, 0.45) else nt:SetVertexColor(1, 1, 1) end
         end
     end
     

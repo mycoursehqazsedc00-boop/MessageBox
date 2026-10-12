@@ -1,9 +1,10 @@
 ## Interface: 11200
 ## Title: |cff3cb7f0Message|cffffffffBox
 ## Author: tilr
-## Version: 2.5
+## Version: 2.5-compat1.1
 ## Notes: A modern messenger-style addon replacement for the WoW whisper system.
 ## SavedVariablesPerCharacter: MessageBoxDB, MessageBoxSettings
+## OptionalDeps: ClassicAPI, UnitXP_SP3_Addon
 
 Bindings.xml
 Core.lua
@@ -14,4 +15,3 @@ Components.lua
 UI.lua
 MessageBox.lua
 Compat.lua
-

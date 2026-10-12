@@ -73,6 +73,19 @@ MessageBox.fonts = {
     frizqt          = "Fonts\\FRIZQT__.TTF",
 }
 
+-- Font fallback: SetText() on a FontString whose font failed to load raises
+-- "Font not set". That happens when the addon's font\ folder is missing from
+-- the install (e.g. only the .lua files were copied). Probe once at load and
+-- fall back to the stock Blizzard font so the UI still builds.
+do
+    local probe = CreateFrame("Frame"):CreateFontString(nil, "ARTWORK")
+    local ok = probe:SetFont(MessageBox.fonts.openSans, 12)
+    if not (ok or probe:GetFont()) then
+        MessageBox.fonts.openSansMissing = true
+        MessageBox.fonts.openSans = MessageBox.fonts.frizqt
+    end
+end
+
 MessageBox.textures = {
     -- Custom addon textures
     closeOutline        = A .. "rectangle-xmark-outline.tga",
@@ -81,6 +94,7 @@ MessageBox.textures = {
     pinSlash            = A .. "pin-slash.tga",
     bellOn              = A .. "bell-on.tga",
     bellOff             = A .. "bell-off-slash.tga",
+    bellFallback        = "Interface\\Icons\\INV_Misc_Bell_01",  -- used only if the .tga is missing
     envelope            = A .. "envelope-solid.tga",
     envelopeOpen        = A .. "envelope-solid-open.tga",
     palette             = A .. "palette.tga",
