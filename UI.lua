@@ -307,7 +307,7 @@ function MessageBox:UpdateChatHeader()
                  cache = {
                      level = fLevel,
                      class = fClass,
-                     classUpper = fClass and string.upper(fClass) or nil,
+                     classUpper = fClass and ((MessageBox.compat and MessageBox.compat.TokenFor and MessageBox.compat:TokenFor(fClass)) or string.upper(fClass)) or nil,
                      zone = fArea,
                      status = fStatus,
                      guild = nil
@@ -701,16 +701,22 @@ function MessageBox:CreateFrame()
             MessageBox:ShowCopyPopup(string.sub(link, 5))
             return
         end
-        if IsShiftKeyDown() and link then
-            local name, itemString, quality = GetItemInfo(link)
-            if name and itemString then
-                local _, _, _, hex = GetItemQualityColor(tonumber(quality) or 1)
-                local fullLink = hex .. "|H" .. itemString .. "|h[" .. name .. "]|h|r"
-                if MessageBox.whisperInput:IsVisible() then
-                    MessageBox.whisperInput:Insert(fullLink)
-                    MessageBox.whisperInput:SetFocus()
-                    return
+        if IsShiftKeyDown() and (link or arg2) then
+            local fullLink = nil
+            if link then
+                local name, itemString, quality = GetItemInfo(link)
+                if name and itemString then
+                    local _, _, _, hex = GetItemQualityColor(tonumber(quality) or 1)
+                    fullLink = hex .. "|H" .. itemString .. "|h[" .. name .. "]|h|r"
                 end
+            end
+            if not fullLink and type(arg2) == "string" and arg2 ~= "" then
+                fullLink = arg2
+            end
+            if fullLink and MessageBox.whisperInput:IsVisible() then
+                MessageBox.whisperInput:Insert(fullLink)
+                MessageBox.whisperInput:SetFocus()
+                return
             end
         end
         ChatFrame_OnHyperlinkShow(arg1, arg2, arg3)
@@ -929,16 +935,21 @@ function MessageBox:UpdateContactList()
             
             if showContact then
                  if not MessageBox.playerCache[name] then MessageBox.playerCache[name] = {} end
-                 MessageBox.playerCache[name].class = class
-                 MessageBox.playerCache[name].classUpper = class and string.upper(class) or nil
-                 MessageBox.playerCache[name].level = level
-                 MessageBox.playerCache[name].zone = area
-                 MessageBox.playerCache[name].status = status
+                 local existing = MessageBox.playerCache[name]
+                 if class and class ~= "" and class ~= "Unknown" then
+                     existing.class = class
+                     existing.classUpper = (MessageBox.compat and MessageBox.compat.TokenFor and MessageBox.compat:TokenFor(class)) or string.upper(class)
+                 end
+                 existing.level = level
+                 existing.zone = area
+                 existing.status = status
                  
+                 local resolvedClass = (class and class ~= "" and class ~= "Unknown") and class or existing.class
+                 local resolvedUpper = existing.classUpper or (resolvedClass and string.upper(resolvedClass) or nil)
                  table.insert(MessageBox.visibleFriends, {
                      name = name,
-                     class = class,
-                     classUpper = class and string.upper(class) or nil,
+                     class = resolvedClass,
+                     classUpper = resolvedUpper,
                      connected = connected,
                      unread = MessageBox.unreadCounts[name] or 0
                  })

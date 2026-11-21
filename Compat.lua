@@ -33,8 +33,11 @@ C.defaults = {
 	classicSilentWho = true,   -- ClassicAPI: route /who silently, suppress friends popup
 	xpFlash          = true,   -- UnitXP: flash taskbar on whisper (background only)
 	xpSystemSound    = false,  -- UnitXP: OS sound on whisper (off: addon already has a sound)
+	xpSoundCooldown  = 2,      -- UnitXP: minimum seconds between OS sound alerts
 	npWhisperBubbles = false,  -- Nampower: chat bubbles for whispers (opt-in)
 }
+
+C.lastSoundAt = 0
 
 function C:Get(key)
 	local s = MessageBox.settings
@@ -174,7 +177,7 @@ function C:NormalizeClass(name)
 end
 
 -- Same fields, same shape, as Logic.lua:HandleWhoResult() writes.
-function C:FeedPlayerInfo(name, localizedClass, englishClass, localizedRace, level)
+function C:FeedPlayerInfo(name, localizedClass, englishClass, localizedRace, level, sex)
 	if not name or not localizedClass then return end
 	C:LearnClass(localizedClass, englishClass)
 
@@ -184,6 +187,7 @@ function C:FeedPlayerInfo(name, localizedClass, englishClass, localizedRace, lev
 	cache.classUpper = englishClass or string.upper(localizedClass)
 	if localizedRace then cache.race = localizedRace end
 	if level then cache.level = level end
+	if sex == 2 or sex == 3 then cache.sex = sex end
 
 	local sc = MessageBox.settings and MessageBox.settings.classCache
 	if sc then
@@ -201,26 +205,39 @@ end
 --      c) ClassicAPI persistent name cache
 ------------------------------------------------------------------------
 
-function C:TryVisibleUnit(name)
-	local units = { "target", "mouseover", "party1", "party2", "party3", "party4" }
-	local nraid = GetNumRaidMembers() or 0
-	for i = 1, nraid do table.insert(units, "raid" .. i) end
+local PARTY_UNITS = { "party1", "party2", "party3", "party4" }
+local RAID_UNITS = {}
+for i = 1, 40 do RAID_UNITS[i] = "raid" .. i end
 
-	for _, unit in ipairs(units) do
-		if UnitExists(unit) and UnitName(unit) == name then
-			local locClass, engClass = UnitClass(unit)
-			if engClass then
-				local locRace = UnitRace(unit)
-				local level = UnitLevel(unit)
-				if level and level < 1 then level = nil end -- skull / unknown
-				C:FeedPlayerInfo(name, locClass, engClass, locRace, level)
-				if C.hasClassicAPI and C_PlayerCache and C_PlayerCache.RememberPlayer then
-					local guid = C:GuidOf(unit)
-					if guid then C_PlayerCache.RememberPlayer(guid, name, engClass) end
-				end
-				return unit
+function C:TryUnit(unit, name)
+	if UnitExists(unit) and UnitName(unit) == name then
+		local locClass, engClass = UnitClass(unit)
+		if engClass then
+			local locRace = UnitRace(unit)
+			local level = UnitLevel(unit)
+			if level and level < 1 then level = nil end -- skull / unknown
+			local sex = UnitSex and UnitSex(unit) or nil
+			C:FeedPlayerInfo(name, locClass, engClass, locRace, level, sex)
+			if C.hasClassicAPI and C_PlayerCache and C_PlayerCache.RememberPlayer then
+				local guid = C:GuidOf(unit)
+				if guid then C_PlayerCache.RememberPlayer(guid, name, engClass) end
 			end
+			return unit
 		end
+	end
+	return nil
+end
+
+function C:TryVisibleUnit(name)
+	if C:TryUnit("target", name) then return "target" end
+	if C:TryUnit("mouseover", name) then return "mouseover" end
+	for i = 1, 4 do
+		if C:TryUnit(PARTY_UNITS[i], name) then return PARTY_UNITS[i] end
+	end
+	local nraid = GetNumRaidMembers() or 0
+	if nraid > 40 then nraid = 40 end
+	for i = 1, nraid do
+		if C:TryUnit(RAID_UNITS[i], name) then return RAID_UNITS[i] end
 	end
 	return nil
 end
@@ -232,10 +249,10 @@ function C:TryGuid(name)
 	-- dispatch; MessageBox:OnEvent wrapper below calls us from exactly there.
 	local guid = GetCurrentChatGUID()
 	if guid then
-		local locClass, engClass, locRace, _, _, gname = GetPlayerInfoByGUID(guid)
+		local locClass, engClass, locRace, _, sex, gname = GetPlayerInfoByGUID(guid)
 		-- Guard: only trust it if the GUID really belongs to this contact.
 		if engClass and (gname == nil or gname == name) then
-			C:FeedPlayerInfo(name, locClass, engClass, locRace, nil)
+			C:FeedPlayerInfo(name, locClass, engClass, locRace, nil, sex)
 			if C_PlayerCache and C_PlayerCache.RememberPlayer then
 				C_PlayerCache.RememberPlayer(guid, name, engClass)
 			end
@@ -244,9 +261,9 @@ function C:TryGuid(name)
 	end
 
 	if C_PlayerCache and C_PlayerCache.GetPlayerInfoByName then
-		local locClass, engClass, locRace = C_PlayerCache.GetPlayerInfoByName(name)
+		local locClass, engClass, locRace, _, sex = C_PlayerCache.GetPlayerInfoByName(name)
 		if engClass then
-			C:FeedPlayerInfo(name, locClass, engClass, locRace, nil)
+			C:FeedPlayerInfo(name, locClass, engClass, locRace, nil, sex)
 			return "name-cache"
 		end
 	end
@@ -422,7 +439,7 @@ if not C.orig_ProcessWhoQueue then
 
 		C:Safe("pwq-observe", function()
 			if waiting and entry and (GetTime() - MessageBox.waitingForWhoSince) > MessageBox.WHO_TIMEOUT then
-				w.timedOut = { lower = entry.nameLower, sentAt = MessageBox.waitingForWhoSince }
+				w.timedOut = { name = entry.name, lower = entry.nameLower, sentAt = MessageBox.waitingForWhoSince }
 				C:OnWhoDropped("timeout")
 			end
 		end)
@@ -457,12 +474,14 @@ if not C.orig_HandleWhoResult then
 	C.orig_HandleWhoResult = MessageBox.HandleWhoResult
 	function MessageBox:HandleWhoResult()
 		local w = C.who
+		local lateName = nil
 		C:Safe("hwr-classify", function()
 			local sig = C:WhoSignature()
 			if not MessageBox.waitingForWhoResult then
 				local to = w.timedOut
 				if to and (GetTime() - to.sentAt) < (C:Get("whoTimeoutMax") * 2) and C:ResultsContain(to.lower) then
 					local lat = GetTime() - to.sentAt
+					lateName = to.name
 					w.timedOut = nil
 					C:OnWhoLate(lat)
 					-- Stock code ignores results when not waiting; let it parse
@@ -490,6 +509,15 @@ if not C.orig_HandleWhoResult then
 				local name = GetWhoInfo(i)
 				if name then C:NormalizeClass(name) end
 			end
+			if lateName then
+				if MessageBox.conversations and MessageBox.conversations[lateName] then
+					MessageBox.conversations[lateName]._fmtCache = nil
+				end
+				local win = MessageBox.detachedWindows and MessageBox.detachedWindows[lateName]
+				if win and win:IsVisible() and win.UpdateHeader then
+					win:UpdateHeader()
+				end
+			end
 		end)
 		return r
 	end
@@ -510,7 +538,14 @@ if not C.orig_OnEvent then
 		if evt == "CHAT_MSG_WHISPER" and C.hasUnitXP then
 			C:Safe("xp-alert", function()
 				if C:Get("xpFlash") then UnitXP("notify", "taskbarIcon") end
-				if C:Get("xpSystemSound") then UnitXP("notify", "systemSound") end
+				if C:Get("xpSystemSound") then
+					local now = GetTime()
+					local cd = C:Get("xpSoundCooldown") or 2
+					if (now - (C.lastSoundAt or 0)) >= cd then
+						C.lastSoundAt = now
+						UnitXP("notify", "systemSound")
+					end
+				end
 			end)
 		end
 
@@ -519,6 +554,39 @@ if not C.orig_OnEvent then
 		if evt == "PLAYER_LOGIN" then
 			C:Safe("login", C.OnLogin, C)
 		end
+		return r
+	end
+end
+
+-- 5e. UpdateChatHeader: show race / sex when known (useful on cross-faction realms)
+if MessageBox.UpdateChatHeader and not C.orig_UpdateChatHeader then
+	C.orig_UpdateChatHeader = MessageBox.UpdateChatHeader
+	function MessageBox:UpdateChatHeader()
+		local r = C.orig_UpdateChatHeader(self)
+		C:Safe("header-race", function()
+			local name = self.selectedContact
+			if not name or not (self.chatHeader and self.chatHeader.infoText) then return end
+			local cache = self.playerCache and self.playerCache[name]
+			if not cache or cache.isGM then return end
+			local extra = nil
+			if cache.race and cache.race ~= "" then
+				extra = cache.race
+				if cache.sex == 2 then extra = extra .. " (M)"
+				elseif cache.sex == 3 then extra = extra .. " (F)" end
+			elseif cache.sex == 2 then
+				extra = "Male"
+			elseif cache.sex == 3 then
+				extra = "Female"
+			end
+			if extra then
+				local cur = self.chatHeader.infoText:GetText() or ""
+				if cur == "" or cur == "Offline or Unknown" or cur == "Unknown Level" then
+					self.chatHeader.infoText:SetText(extra)
+				else
+					self.chatHeader.infoText:SetText(cur .. " • " .. extra)
+				end
+			end
+		end)
 		return r
 	end
 end
@@ -611,9 +679,32 @@ end
 
 function C:OnOff(v) return v and "on" or "off" end
 
+function C:PrintStats()
+	local convos = 0
+	local msgs = 0
+	if MessageBox.conversations then
+		for _, c in pairs(MessageBox.conversations) do
+			convos = convos + 1
+			msgs = msgs + MessageBox:GetCount(c)
+		end
+	end
+	local cached, withClass, withRace, gms = 0, 0, 0, 0
+	if MessageBox.playerCache then
+		for _, info in pairs(MessageBox.playerCache) do
+			cached = cached + 1
+			if info.isGM then gms = gms + 1 end
+			if info.class then withClass = withClass + 1 end
+			if info.race then withRace = withRace + 1 end
+		end
+	end
+	local qlen = MessageBox.whoQueue and table.getn(MessageBox.whoQueue) or 0
+	C:Say(string.format("stats: %d conversations, %d messages | cache: %d players (%d class, %d race, %d GM) | whoQueue: %d",
+		convos, msgs, cached, withClass, withRace, gms, qlen))
+end
+
 function C:Slash(msg)
 	local text = msg or ""
-	local _, _, verb, rest = string.find(string.lower(text), "^(%S*)%s*(.*)$")
+	local _, _, verb, rest = string.find(string.lower(text), "^%s*(%S*)%s*(.-)%s*$")
 	verb = verb or ""
 	rest = rest or ""
 
@@ -654,9 +745,18 @@ function C:Slash(msg)
 			local v = not C:Get("xpFlash"); C:Set("xpFlash", v); C:Say("taskbar flash: " .. C:OnOff(v))
 		elseif rest == "sound" then
 			local v = not C:Get("xpSystemSound"); C:Set("xpSystemSound", v); C:Say("OS sound alert: " .. C:OnOff(v))
+		elseif string.find(rest, "^cd%s+") then
+			local _, _, sec = string.find(rest, "^cd%s+(%S+)")
+			local n = tonumber(sec)
+			if n and n >= 0 then
+				C:Set("xpSoundCooldown", n)
+				C:Say(string.format("OS sound cooldown: %.1fs", n))
+			else
+				C:Say("/mbox xp cd <seconds>")
+			end
 		else
-			C:Say("taskbar flash " .. C:OnOff(C:Get("xpFlash")) .. ", OS sound " .. C:OnOff(C:Get("xpSystemSound"))
-				.. "  (/mbox xp flash | sound; only effective while the game is in the background)")
+			C:Say(string.format("taskbar flash %s, OS sound %s (cd %.1fs)  (/mbox xp flash | sound | cd <sec>; background only)",
+				C:OnOff(C:Get("xpFlash")), C:OnOff(C:Get("xpSystemSound")), C:Get("xpSoundCooldown") or 2))
 		end
 		return true
 
@@ -686,8 +786,12 @@ function C:Slash(msg)
 		end
 		return true
 
+	elseif verb == "stats" then
+		C:PrintStats()
+		return true
+
 	elseif verb == "help" then
-		C:Say("extra commands: mods | who | xp | bubbles | log | trace   (stock: queue | clear | stress)")
+		C:Say("extra commands: mods | who | xp | bubbles | log | stats | trace   (stock: queue | clear | stress)")
 		return true
 	end
 	return false
