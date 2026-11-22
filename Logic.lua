@@ -284,7 +284,8 @@ function MessageBox:AddMessage(contact, message, isOutgoing)
     if self.detachedWindows[contact] and self.detachedWindows[contact]:IsVisible() then
         local win = self.detachedWindows[contact]
         win.scrollBar:SetMinMaxValues(1, c.count)
-        win.scrollBar:SetValue(c.count) 
+        win.scrollBar:SetValue(c.count)
+        win.renderDirty = true
     end
 
     if not isOutgoing then
@@ -345,6 +346,7 @@ function MessageBox:AddSystemMessage(contact, message, isTransient)
         local win = self.detachedWindows[contact]
         win.scrollBar:SetMinMaxValues(1, c.count)
         win.scrollBar:SetValue(c.count)
+        win.renderDirty = true
     end
 
     if self.frame and self.frame:IsVisible() and self.selectedContact == contact then

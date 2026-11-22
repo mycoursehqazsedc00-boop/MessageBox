@@ -1038,17 +1038,22 @@ function MessageBox:OpenDetachedWindow(contact)
     
     local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOP", 0, -10)
-    
-    local displayTitle = contact
-    local cache = self.playerCache[contact]
-    if cache and cache.class then
-        local color = RAID_CLASS_COLORS[cache.classUpper]
-        if color then
-            displayTitle = string.format("|cff%02x%02x%02x%s|r", color.r*255, color.g*255, color.b*255, contact)
-        end
-    end
-    title:SetText(displayTitle)
     f.title = title
+
+    f.UpdateHeader = function(self)
+        local displayTitle = self.contact
+        local c = MessageBox.playerCache[self.contact]
+        if c and c.isGM then
+            displayTitle = "|cff00ccffGM " .. self.contact .. "|r"
+        elseif c and c.class then
+            local color = RAID_CLASS_COLORS[c.classUpper]
+            if color then
+                displayTitle = string.format("|cff%02x%02x%02x%s|r", color.r*255, color.g*255, color.b*255, self.contact)
+            end
+        end
+        self.title:SetText(displayTitle)
+    end
+    f:UpdateHeader()
 
     local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", -5, -5)
@@ -1178,6 +1183,24 @@ function MessageBox:OpenDetachedWindow(contact)
         if arg1 and string.sub(arg1, 1, 3) == "url" then
             MessageBox:ShowCopyPopup(string.sub(arg1, 5))
             return
+        end
+        if IsShiftKeyDown() and (arg1 or arg2) then
+            local fullLink = nil
+            if arg1 then
+                local name, itemString, quality = GetItemInfo(arg1)
+                if name and itemString then
+                    local _, _, _, hex = GetItemQualityColor(tonumber(quality) or 1)
+                    fullLink = hex .. "|H" .. itemString .. "|h[" .. name .. "]|h|r"
+                end
+            end
+            if not fullLink and type(arg2) == "string" and arg2 ~= "" then
+                fullLink = arg2
+            end
+            if fullLink and f.editBox and f.editBox:IsVisible() then
+                f.editBox:Insert(fullLink)
+                f.editBox:SetFocus()
+                return
+            end
         end
         ChatFrame_OnHyperlinkShow(arg1, arg2, arg3)
     end)
