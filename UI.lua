@@ -929,7 +929,7 @@ function MessageBox:UpdateContactList()
             MessageBox.onlineStatus[nameLower] = connected
             MessageBox.friendSet[nameLower] = true
             
-            local matchesSearch = (searchQuery == "") or string.find(nameLower, searchQuery)
+            local matchesSearch = (searchQuery == "") or string.find(nameLower, searchQuery, 1, true)
             local showContact = matchesSearch
             if hideOffline and not connected then showContact = false end
             
@@ -992,7 +992,7 @@ function MessageBox:UpdateContactList()
         for i = 1, table.getn(sortedContacts) do
             local contact = sortedContacts[i]
             if MessageBox.conversations[contact] then
-                local matchesSearch = (searchQuery == "") or string.find(string.lower(contact), searchQuery)
+                local matchesSearch = (searchQuery == "") or string.find(string.lower(contact), searchQuery, 1, true)
                 
                 if matchesSearch then
                     table.insert(MessageBox.visibleConversations, {

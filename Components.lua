@@ -104,7 +104,11 @@ function MessageBox:UpdateMinimapPosition()
         local xmin, ymin = Minimap:GetLeft(), Minimap:GetBottom()
         xpos = xmin - xpos / UIParent:GetScale() + 70
         ypos = ypos / UIParent:GetScale() - ymin - 70
-        self.minimapPos = math.deg(math.atan2(ypos, xpos))
+        local deg = math.deg(math.atan2(ypos, xpos))
+        self.minimapPos = deg
+        if self.settings then self.settings.minimapPos = deg end
+    elseif self.settings and self.settings.minimapPos ~= nil then
+        self.minimapPos = self.settings.minimapPos
     end
 
     local angle = math.rad(self.minimapPos or 45)
@@ -935,6 +939,8 @@ function MessageBox:ConfirmDelete()
     if self.unreadCounts then self.unreadCounts[self.selectedContact] = nil end
     self.selectedContact = nil
     MessageBox.conversationOrderDirty = true
+    MessageBox.crashSaveDirty = true
+    self:UpdateMinimapBadge()
     self:UpdateChatHeader()
     self:UpdateContactList()
     self:UpdateChatHistory()
@@ -958,13 +964,17 @@ function MessageBox:ConfirmDeleteAll()
     end
     
     MessageBox.conversationOrderDirty = true
+    if deletedCount > 0 then MessageBox.crashSaveDirty = true end
     
     if self.selectedContact and not self.conversations[self.selectedContact] then
         self.selectedContact = nil
         self:UpdateChatHeader()
         self:UpdateChatHistory()
+    else
+        self:UpdateChatHistory()
     end
     
+    self:UpdateMinimapBadge()
     self:UpdateContactList()
     
     if deletedCount > 0 then
@@ -979,7 +989,24 @@ function MessageBox:OpenDetachedWindow(contact)
     if not contact then return end
     
     if self.detachedWindows[contact] then
-        self.detachedWindows[contact]:Show()
+        local win = self.detachedWindows[contact]
+        win:Show()
+        if self.unreadCounts and self.unreadCounts[contact] and self.unreadCounts[contact] > 0 then
+            self.unreadCounts[contact] = 0
+            self:UpdateMinimapBadge()
+            self:MarkContactListDirty()
+        end
+        if win.UpdateHeader then win:UpdateHeader() end
+        local c = self.conversations[contact]
+        if c and c.messages and win.scrollBar then
+            local total = MessageBox:GetCount(c)
+            if total == 0 then total = 1 end
+            win.scrollBar.isUpdating = true
+            win.scrollBar:SetMinMaxValues(1, total)
+            win.scrollBar:SetValue(total)
+            win.scrollBar.isUpdating = false
+        end
+        if win.UpdateDisplay then win:UpdateDisplay() end
         return
     end
 
@@ -1133,7 +1160,10 @@ function MessageBox:OpenDetachedWindow(contact)
         if not self.history or not self.scrollBar then return end
         
         local c = MessageBox.conversations[self.contact]
-        if not c or not c.messages then return end
+        if not c or not c.messages then
+            self.history:Clear()
+            return
+        end
         
         local totalMessages = MessageBox:GetCount(c)
         
